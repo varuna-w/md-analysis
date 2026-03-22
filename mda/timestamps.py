@@ -16,30 +16,68 @@ import numpy as np
 from typing import Literal
 
 
+# ── public utilities ──────────────────────────────────────────────────────────
+
+def ts_us_to_dt(ts_us: pd.Series) -> pd.Series:
+    """Convert int64 µs-since-epoch Series to datetime64[ns, UTC]."""
+    return pd.to_datetime(ts_us * 1_000, unit="ns", utc=True)
+
+
+def freq_to_seconds(freq: str) -> float:
+    """Convert a pandas frequency string (e.g. '1min', '1s') to seconds."""
+    return pd.tseries.frequencies.to_offset(freq).nanos / 1e9  # type: ignore
+
+
+def compute_gaps(df: pd.DataFrame, ts_col: str) -> pd.DataFrame:
+    """
+    Compute per-exchange inter-event gaps from any µs timestamp column.
+
+    Parameters
+    ----------
+    df : DataFrame with ``exchange`` and ``ts_col`` columns.
+    ts_col : name of the int64 µs timestamp column.
+
+    Returns
+    -------
+    DataFrame with columns: exchange, gap_us.
+    """
+    parts = []
+    for exchange, grp in df.groupby("exchange"):
+        gaps = grp[ts_col].sort_values().diff().dropna().values
+        parts.append(pd.DataFrame({"exchange": exchange, "gap_us": gaps}))
+    if not parts:
+        return pd.DataFrame(columns=["exchange", "gap_us"])
+    return pd.concat(parts, ignore_index=True)
+
+
 def add_ts_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add derived timestamp columns to a trades or orderbook DataFrame.
 
+    Mutates ``df`` in-place and returns it.
+
     New columns added:
     - ``exchange_ts_us``: int64 µs since Unix epoch, from ``timestamp`` ISO string.
       Maximum precision — µs for Kraken/Coinbase/Delta, ms-quantised for Binance.
+    - ``exchange_ts_dt``: datetime64[ns, UTC] version of ``exchange_ts_us``.
     - ``receive_ts_us``: int64 µs since Unix epoch, from ``received_at`` ISO string.
+    - ``receive_ts_dt``: datetime64[ns, UTC] version of ``receive_ts_us``.
     - ``price_f``: float64 reconstructed price (``price / 10**price_scale``).
     - ``qty_f``: float64 reconstructed quantity.
     - ``notional_usd``: ``price_f * qty_f`` (proxy; do not use for absolute sizing).
+
+    Layer functions consume ``receive_ts_dt`` / ``exchange_ts_dt`` directly so the
+    µs→ns conversion is done exactly once per load rather than once per function.
     """
     if "timestamp" in df.columns:
-        df["exchange_ts_us"] = (
-            pd.to_datetime(df["timestamp"], utc=True, format="mixed")
-            .astype("int64")
-            // 1_000
-        )
+        dt = pd.to_datetime(df["timestamp"], utc=True, format="mixed")
+        # Use datetime64[us] intermediate to avoid the ÷1000 step (zero-copy-ish)
+        df["exchange_ts_us"] = dt.astype("datetime64[us]").astype("int64")
+        df["exchange_ts_dt"] = dt
     if "received_at" in df.columns:
-        df["receive_ts_us"] = (
-            pd.to_datetime(df["received_at"], utc=True, format="mixed")
-            .astype("int64")
-            // 1_000
-        )
+        dt = pd.to_datetime(df["received_at"], utc=True, format="mixed")
+        df["receive_ts_us"] = dt.astype("datetime64[us]").astype("int64")
+        df["receive_ts_dt"] = dt
     if "price" in df.columns and "price_scale" in df.columns:
         df["price_f"] = df["price"] / (10.0 ** df["price_scale"])
     if "quantity" in df.columns and "quantity_scale" in df.columns:
@@ -49,9 +87,7 @@ def add_ts_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def classify_resolution(
-    exchange_ts_us: pd.Series,
-) -> dict[str, object]:
+def classify_resolution(exchange_ts_us: pd.Series) -> dict[str, object]:
     """
     Classify the effective timestamp resolution for a single exchange feed.
 
@@ -92,14 +128,18 @@ def session_mask(
 
     Parameters
     ----------
-    df : DataFrame with ``receive_ts_us`` column (int64 µs).
+    df : DataFrame with ``receive_ts_dt`` (or ``receive_ts_us``) column.
     session : one of 'full_24h', 'peak_session', 'low_liq', 'stress'.
     btc_price : optional BTC price series indexed by receive_ts_us for stress detection.
     """
-    if "receive_ts_us" not in df.columns:
-        raise ValueError("DataFrame must contain 'receive_ts_us'")
+    # Use pre-computed datetime column when available; fall back to µs conversion.
+    if "receive_ts_dt" in df.columns:
+        dt = df["receive_ts_dt"]
+    elif "receive_ts_us" in df.columns:
+        dt = ts_us_to_dt(df["receive_ts_us"])
+    else:
+        raise ValueError("DataFrame must contain 'receive_ts_dt' or 'receive_ts_us'")
 
-    dt = pd.to_datetime(df["receive_ts_us"] * 1_000, unit="ns", utc=True)
     hour = dt.dt.hour
 
     if session == "full_24h":
@@ -111,11 +151,8 @@ def session_mask(
     elif session == "stress":
         if btc_price is None:
             raise ValueError("btc_price required for stress session")
-        # 1-minute resampled price change > 2%
         price_1min = btc_price.resample("1min").last().pct_change().abs()
         stress_minutes = price_1min[price_1min > 0.02].index
-        # Map back: check if each row's minute falls in a stress window
-        minute_floor = dt.dt.floor("1min")
-        return minute_floor.isin(stress_minutes)
+        return dt.dt.floor("1min").isin(stress_minutes)
     else:
         raise ValueError(f"Unknown session: {session!r}")

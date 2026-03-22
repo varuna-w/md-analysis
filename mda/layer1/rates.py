@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from typing import Literal
+
+from ..timestamps import compute_gaps, freq_to_seconds
 
 
 SESSION_WINDOWS = {
@@ -32,23 +33,18 @@ def compute_rate_timeseries(
 
     Parameters
     ----------
-    df : trades DataFrame with ``receive_ts_us`` and ``exchange`` columns.
+    df : trades DataFrame with ``receive_ts_dt`` and ``exchange`` columns.
     freq : pandas resample frequency string.
 
     Returns
     -------
-    DataFrame indexed by (exchange, time_bin) with column ``msgs_per_sec``.
+    DataFrame with columns: exchange, time_bin, msgs_per_sec.
     """
-    dt_index = pd.to_datetime(df["receive_ts_us"] * 1_000, unit="ns", utc=True)
-    df = df.copy()
-    df["_dt"] = dt_index
-
-    freq_seconds = pd.tseries.frequencies.to_offset(freq).nanos / 1e9  # type: ignore
-
+    fs = freq_to_seconds(freq)
     result = (
         df.groupby("exchange")
         .apply(
-            lambda g: g.set_index("_dt").resample(freq).size() / freq_seconds,
+            lambda g: g.set_index("receive_ts_dt").resample(freq).size() / fs,
             include_groups=False,
         )
         .rename("msgs_per_sec")
@@ -81,24 +77,11 @@ def compute_rate_percentiles(rate_ts: pd.DataFrame) -> pd.DataFrame:
 
 def compute_intermessage_gaps(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute per-exchange inter-message intervals in µs.
+    Compute per-exchange inter-message intervals (µs) from receive timestamps.
 
-    Parameters
-    ----------
-    df : trades DataFrame with ``receive_ts_us`` and ``exchange``.
-
-    Returns
-    -------
-    DataFrame with columns ``exchange``, ``gap_us``.
+    Returns DataFrame with columns: exchange, gap_us.
     """
-    records = []
-    for exchange, grp in df.groupby("exchange"):
-        sorted_ts = grp["receive_ts_us"].sort_values()
-        gaps = sorted_ts.diff().dropna().values
-        records.append(pd.DataFrame({"exchange": exchange, "gap_us": gaps}))
-    if not records:
-        return pd.DataFrame(columns=["exchange", "gap_us"])
-    return pd.concat(records, ignore_index=True)
+    return compute_gaps(df, "receive_ts_us")
 
 
 def detect_bursts(
@@ -109,11 +92,14 @@ def detect_bursts(
     """
     Detect burst events: contiguous time windows where rate > p{quantile*100}.
 
+    Uses the classic pandas island-detection idiom: (~above).cumsum() assigns
+    a unique ID to each contiguous run of above-threshold bins.
+
     Parameters
     ----------
     rate_ts : output of :func:`compute_rate_timeseries`.
     quantile : threshold percentile (default 0.95).
-    min_duration_bins : minimum number of consecutive bins to qualify as a burst.
+    min_duration_bins : minimum consecutive bins to qualify as a burst.
 
     Returns
     -------
@@ -133,7 +119,6 @@ def detect_bursts(
                 continue
             start = burst["time_bin"].iloc[0]
             end = burst["time_bin"].iloc[-1]
-            # Duration: use time difference between first and last bin
             duration_sec = max((end - start).total_seconds(), 1.0)
             records.append({
                 "exchange": exchange,
@@ -161,37 +146,53 @@ def compute_session_profile(
     """
     Compute p99 message rates broken down by session window.
 
+    Single-pass: labels each row with its session, then resamples once per
+    (exchange, session) group rather than rebuilding rate timeseries per session.
+
     Parameters
     ----------
-    df : trades DataFrame with ``receive_ts_us`` and ``exchange``.
+    df : trades DataFrame with ``receive_ts_dt`` and ``exchange``.
 
     Returns
     -------
     DataFrame with columns: exchange, session, p99_rate, p95_rate, mean_rate.
     """
-    dt = pd.to_datetime(df["receive_ts_us"] * 1_000, unit="ns", utc=True)
-    df = df.copy()
-    df["_dt"] = dt
-    df["_hour"] = dt.dt.hour
+    fs = freq_to_seconds(rate_freq)
+    hour = df["receive_ts_dt"].dt.hour
+
+    # Assign session labels (non-overlapping; full_24h computed separately)
+    session = pd.Series("other", index=df.index)
+    session[(hour >= 8) & (hour < 16)] = "peak_session"
+    session[(hour >= 2) & (hour < 6)] = "low_liq"
 
     records = []
-    for session, (h_start, h_end) in SESSION_WINDOWS.items():
-        if h_start is None:
-            mask = pd.Series(True, index=df.index)
-        else:
-            mask = (df["_hour"] >= h_start) & (df["_hour"] < h_end)
-        sub = df[mask]
-        if sub.empty:
-            continue
-        rate_ts = compute_rate_timeseries(sub, freq=rate_freq)
-        for exchange, grp in rate_ts.groupby("exchange"):
+
+    # Full 24h — single groupby over all rows
+    for exchange, grp in df.groupby("exchange"):
+        rate = grp.set_index("receive_ts_dt").resample(rate_freq).size() / fs
+        records.append({
+            "exchange": exchange,
+            "session": "full_24h",
+            "p99_rate": float(rate.quantile(0.99)),
+            "p95_rate": float(rate.quantile(0.95)),
+            "mean_rate": float(rate.mean()),
+        })
+
+    # Sub-sessions — one pass, grouped by (exchange, session)
+    df_sub = df.copy()
+    df_sub["_session"] = session
+    df_sub = df_sub[df_sub["_session"] != "other"]
+    if not df_sub.empty:
+        for (exchange, sess), grp in df_sub.groupby(["exchange", "_session"]):
+            rate = grp.set_index("receive_ts_dt").resample(rate_freq).size() / fs
             records.append({
                 "exchange": exchange,
-                "session": session,
-                "p99_rate": float(grp["msgs_per_sec"].quantile(0.99)),
-                "p95_rate": float(grp["msgs_per_sec"].quantile(0.95)),
-                "mean_rate": float(grp["msgs_per_sec"].mean()),
+                "session": sess,
+                "p99_rate": float(rate.quantile(0.99)),
+                "p95_rate": float(rate.quantile(0.95)),
+                "mean_rate": float(rate.mean()),
             })
+
     return pd.DataFrame(records)
 
 
@@ -199,17 +200,12 @@ def compute_volume_heatmap(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute trade count by (hour, day-of-week) per exchange.
 
-    Returns
-    -------
-    DataFrame with columns: exchange, hour, dow, trade_count.
+    Returns DataFrame with columns: exchange, hour, dow, trade_count.
     """
-    dt = pd.to_datetime(df["receive_ts_us"] * 1_000, unit="ns", utc=True)
-    df = df.copy()
-    df["_hour"] = dt.dt.hour
-    df["_dow"] = dt.dt.day_of_week  # 0=Monday
-
+    dt = df["receive_ts_dt"]
     result = (
-        df.groupby(["exchange", "_hour", "_dow"])
+        df.assign(_hour=dt.dt.hour, _dow=dt.dt.day_of_week)
+        .groupby(["exchange", "_hour", "_dow"])
         .size()
         .reset_index(name="trade_count")
     )

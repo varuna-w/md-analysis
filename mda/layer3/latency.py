@@ -16,22 +16,14 @@ def compute_feed_latency(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute raw and offset-corrected feed latency per trade.
 
-    Adds columns:
-    - ``latency_ms``: raw (receive - exchange) in milliseconds
-    - ``latency_corrected_ms``: latency minus per-exchange p1 (physical floor)
+    Mutates ``df`` in-place (adds ``latency_ms``, ``latency_corrected_ms``)
+    and returns it.
 
     Parameters
     ----------
     df : trades DataFrame with ``exchange_ts_us`` and ``receive_ts_us``.
-
-    Returns
-    -------
-    DataFrame with the two new latency columns added.
     """
-    df = df.copy()
     df["latency_ms"] = (df["receive_ts_us"] - df["exchange_ts_us"]) / 1_000.0
-
-    # Per-exchange p1 = physical minimum (network floor)
     p1 = df.groupby("exchange")["latency_ms"].quantile(0.01)
     df["latency_corrected_ms"] = df["latency_ms"] - df["exchange"].map(p1)
     return df
@@ -41,11 +33,14 @@ def latency_stats(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute latency distribution statistics per exchange.
 
+    Calls ``compute_feed_latency`` if ``latency_ms`` is not already present.
+
     Returns DataFrame with columns:
-      exchange, p1, p25, p50, p75, p95, p99, p99_9, max_ms, negative_pct.
+      exchange, p1_ms, p25_ms, p50_ms, p75_ms, p95_ms, p99_ms, p99_9_ms,
+      max_ms, negative_pct.
     """
     if "latency_ms" not in df.columns:
-        df = compute_feed_latency(df)
+        compute_feed_latency(df)
 
     records = []
     for exchange, grp in df.groupby("exchange"):
@@ -72,19 +67,22 @@ def latency_drift_timeseries(
     """
     Rolling median latency over time per exchange (graph E6).
 
+    Calls ``compute_feed_latency`` if ``latency_ms`` is not already present.
+
     Returns DataFrame: exchange, time_bin, p50_latency_ms.
     """
     if "latency_ms" not in df.columns:
-        df = compute_feed_latency(df)
-
-    dt = pd.to_datetime(df["receive_ts_us"] * 1_000, unit="ns", utc=True)
-    df = df.copy()
-    df["_dt"] = dt
+        compute_feed_latency(df)
 
     records = []
     for exchange, grp in df.groupby("exchange"):
-        grp = grp.set_index("_dt").sort_index()
-        ts = grp["latency_ms"].resample(freq).median().reset_index()
+        ts = (
+            grp.set_index("receive_ts_dt")
+            .sort_index()["latency_ms"]
+            .resample(freq)
+            .median()
+            .reset_index()
+        )
         ts.columns = ["time_bin", "p50_latency_ms"]
         ts.insert(0, "exchange", exchange)
         records.append(ts)

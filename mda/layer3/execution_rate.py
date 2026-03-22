@@ -1,8 +1,8 @@
 """
 Layer 3 — Exchange-timestamp-derived execution rates (graph E1).
 
-Uses ``exchange_ts_us`` (from ISO 8601 string parse) rather than
-``receive_ts_us`` so the rate reflects what the exchange actually
+Uses ``exchange_ts_dt`` (pre-computed by add_ts_columns) rather than
+``receive_ts_dt`` so the rate reflects what the exchange actually
 matched, not our receive jitter.
 """
 
@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
+
+from ..timestamps import freq_to_seconds
 
 
 def compute_execution_rate(
@@ -21,22 +23,22 @@ def compute_execution_rate(
 
     Parameters
     ----------
-    df : trades DataFrame with ``exchange_ts_us`` and ``exchange``.
+    df : trades DataFrame with ``exchange_ts_dt`` and ``exchange``.
     freq : resample frequency (default 1s).
 
     Returns
     -------
     DataFrame: exchange, time_bin, exec_per_sec.
     """
-    freq_seconds = pd.tseries.frequencies.to_offset(freq).nanos / 1e9  # type: ignore
-    dt = pd.to_datetime(df["exchange_ts_us"] * 1_000, unit="ns", utc=True)
-    df = df.copy()
-    df["_dt"] = dt
-
+    fs = freq_to_seconds(freq)
     records = []
     for exchange, grp in df.groupby("exchange"):
-        grp = grp.set_index("_dt").sort_index()
-        rate = grp.resample(freq).size() / freq_seconds
+        rate = (
+            grp.set_index("exchange_ts_dt")
+            .resample(freq)
+            .size()
+            / fs
+        )
         rate = rate.reset_index()
         rate.columns = ["time_bin", "exec_per_sec"]
         rate.insert(0, "exchange", exchange)

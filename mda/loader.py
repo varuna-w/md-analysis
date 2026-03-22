@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import tracemalloc
-from typing import Sequence
 
 import pandas as pd
 import pyarrow as pa

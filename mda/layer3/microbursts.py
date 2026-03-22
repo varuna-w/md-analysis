@@ -13,6 +13,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..timestamps import ts_us_to_dt
+
 
 def detect_microbursts(
     df: pd.DataFrame,
@@ -21,6 +23,10 @@ def detect_microbursts(
 ) -> pd.DataFrame:
     """
     Detect micro-bursts per (exchange, symbol).
+
+    Uses the island-detection idiom: a "new burst" starts whenever the gap
+    from the previous row exceeds the threshold (or at the first row).  The
+    first trade of each burst is included in the group via the cumsum ID.
 
     Parameters
     ----------
@@ -36,13 +42,10 @@ def detect_microbursts(
     records = []
     for (exchange, symbol), grp in df.groupby(["exchange", "symbol"]):
         grp = grp.sort_values("exchange_ts_us").reset_index(drop=True)
-        grp["gap_us"] = grp["exchange_ts_us"].diff()
-
-        # A row is "in burst" if the gap from the previous row is <= threshold
-        # We consider the first row of each burst as also part of it
-        grp["in_burst"] = grp["gap_us"] <= gap_us_threshold
-        # Assign burst IDs: each time a gap > threshold, new burst
-        grp["burst_id"] = (~grp["in_burst"]).cumsum()
+        gap = grp["exchange_ts_us"].diff()
+        # new_burst is True at the first row and at each gap > threshold
+        new_burst = (gap > gap_us_threshold) | gap.isna()
+        grp["burst_id"] = new_burst.cumsum()
 
         for bid, burst in grp.groupby("burst_id"):
             if len(burst) < min_size:
@@ -51,7 +54,6 @@ def detect_microbursts(
                 burst["exchange_ts_us"].max() - burst["exchange_ts_us"].min(), 1
             )
             size = len(burst)
-            peak_per_ms = size / max(duration_us / 1_000, 0.001)
             records.append({
                 "exchange": exchange,
                 "symbol": symbol,
@@ -59,7 +61,7 @@ def detect_microbursts(
                 "size": size,
                 "duration_us": int(duration_us),
                 "start_ts_us": int(burst["exchange_ts_us"].min()),
-                "peak_trades_per_ms": float(peak_per_ms),
+                "peak_trades_per_ms": float(size / max(duration_us / 1_000, 0.001)),
             })
 
     if not records:
@@ -94,12 +96,11 @@ def microburst_heatmap(bursts: pd.DataFrame) -> pd.DataFrame:
 
     Returns DataFrame: exchange, hour, dow, peak_trades_per_ms.
     """
-    dt = pd.to_datetime(bursts["start_ts_us"] * 1_000, unit="ns", utc=True)
-    bursts = bursts.copy()
-    bursts["hour"] = dt.dt.hour
-    bursts["dow"] = dt.dt.day_of_week
-    return (
-        bursts.groupby(["exchange", "hour", "dow"])["peak_trades_per_ms"]
+    dt = ts_us_to_dt(bursts["start_ts_us"])
+    result = (
+        bursts.assign(hour=dt.dt.hour, dow=dt.dt.day_of_week)
+        .groupby(["exchange", "hour", "dow"])["peak_trades_per_ms"]
         .max()
         .reset_index()
     )
+    return result

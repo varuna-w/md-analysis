@@ -7,6 +7,31 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 
+from ..timestamps import freq_to_seconds
+
+
+def _resample_count_by_exchange(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """
+    Resample row counts by exchange using the pre-computed ``receive_ts_dt`` column
+    (added by ``add_ts_columns``).  Falls back to parsing ``received_at`` if absent.
+    """
+    if "receive_ts_dt" not in df.columns:
+        df = df.copy()
+        df["receive_ts_dt"] = pd.to_datetime(
+            df["received_at"], utc=True, format="mixed"
+        )
+    result = (
+        df.groupby("exchange")
+        .apply(
+            lambda g: g.set_index("receive_ts_dt").resample(freq).size(),
+            include_groups=False,
+        )
+        .reset_index()
+        .rename(columns={0: "count"})
+    )
+    result.columns = ["exchange", "time_bin", "count"]
+    return result
+
 
 def compute_update_rate_by_depth(
     ob: pd.DataFrame,
@@ -17,29 +42,24 @@ def compute_update_rate_by_depth(
 
     Parameters
     ----------
-    ob : orderbook DataFrame with ``exchange``, ``level``, ``received_at``.
+    ob : orderbook DataFrame with ``exchange``, ``level``, ``receive_ts_dt``
+        (or ``received_at`` as fallback).
     freq : resample frequency.
 
     Returns
     -------
-    DataFrame: exchange, level, avg_updates_per_sec.
+    DataFrame: exchange, level, avg_updates_per_sec, p99_updates_per_sec.
     """
-    if "receive_ts_us" not in ob.columns:
+    if "receive_ts_dt" not in ob.columns:
         ob = ob.copy()
-        ob["receive_ts_us"] = (
-            pd.to_datetime(ob["received_at"], utc=True, format="mixed")
-            .astype("int64") // 1_000
+        ob["receive_ts_dt"] = pd.to_datetime(
+            ob["received_at"], utc=True, format="mixed"
         )
 
-    freq_seconds = pd.tseries.frequencies.to_offset(freq).nanos / 1e9  # type: ignore
-    dt = pd.to_datetime(ob["receive_ts_us"] * 1_000, unit="ns", utc=True)
-    ob = ob.copy()
-    ob["_dt"] = dt
-
+    fs = freq_to_seconds(freq)
     records = []
     for (exchange, level), grp in ob.groupby(["exchange", "level"]):
-        grp = grp.set_index("_dt").sort_index()
-        rate = grp.resample(freq).size() / freq_seconds
+        rate = grp.set_index("receive_ts_dt").sort_index().resample(freq).size() / fs
         records.append({
             "exchange": exchange,
             "level": int(level),
@@ -57,23 +77,14 @@ def compute_delta_compression_ratio(
     """
     Compute delta compression ratio over time (graph O3).
 
-    Compression ratio = updates / snapshots (within each time window).
-    A ratio > 1 means deltas are more numerous; < 1 means snapshots dominate.
+    Compression ratio = updates / snapshots within each time window.
+    > 1 means deltas outnumber snapshots; < 1 means snapshots dominate.
 
     Returns DataFrame: exchange, time_bin, delta_ratio.
     """
-    def _resample_count(df, _freq):
-        dt = pd.to_datetime(df["received_at"], utc=True, format="mixed")
-        df = df.copy()
-        df["_dt"] = dt
-        return df.groupby("exchange").apply(
-            lambda g: g.set_index("_dt").resample(_freq).size(),
-            include_groups=False,
-        ).reset_index().rename(columns={0: "count"})
-
-    snap_counts = _resample_count(ob, freq)
+    snap_counts = _resample_count_by_exchange(ob, freq)
     snap_counts.columns = ["exchange", "time_bin", "snap_count"]
-    upd_counts = _resample_count(ob_updates, freq)
+    upd_counts = _resample_count_by_exchange(ob_updates, freq)
     upd_counts.columns = ["exchange", "time_bin", "upd_count"]
 
     merged = snap_counts.merge(upd_counts, on=["exchange", "time_bin"], how="outer").fillna(0)

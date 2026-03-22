@@ -40,13 +40,11 @@ def compute_out_of_order(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     for (exchange, symbol), grp in df.groupby(["exchange", "symbol"]):
         # Sort by receive time — this is the order we'd process them
         grp = grp.sort_values("receive_ts_us").reset_index(drop=True)
-        grp["_prev_exchange_ts"] = grp["exchange_ts_us"].shift(1)
         grp["oo_lag_us"] = (
-            grp["_prev_exchange_ts"] - grp["exchange_ts_us"]
+            grp["exchange_ts_us"].shift(1) - grp["exchange_ts_us"]
         ).clip(lower=0)
         oo_mask = grp["oo_lag_us"] > 0
         oo = grp[oo_mask].copy()
-        oo.insert(0, "symbol_col", symbol)
         event_parts.append(oo)
 
     if not event_parts:

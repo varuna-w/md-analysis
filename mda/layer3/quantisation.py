@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
-from ..timestamps import classify_resolution
+
+from ..timestamps import classify_resolution, compute_gaps
 
 
 def compute_timestamp_gaps(df: pd.DataFrame) -> pd.DataFrame:
@@ -15,14 +16,7 @@ def compute_timestamp_gaps(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns DataFrame with columns: exchange, gap_us (one row per pair).
     """
-    records = []
-    for exchange, grp in df.groupby("exchange"):
-        sorted_ts = grp["exchange_ts_us"].sort_values()
-        gaps = sorted_ts.diff().dropna().values
-        records.append(pd.DataFrame({"exchange": exchange, "gap_us": gaps}))
-    if not records:
-        return pd.DataFrame(columns=["exchange", "gap_us"])
-    return pd.concat(records, ignore_index=True)
+    return compute_gaps(df, "exchange_ts_us")
 
 
 def resolution_report(df: pd.DataFrame) -> pd.DataFrame:

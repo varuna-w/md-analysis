@@ -135,7 +135,7 @@ for table in $TABLES; do
     aws s3 sync "s3://$S3_BUCKET/$table/" "$LOCAL_DIR/$table/" \
         --exclude "*" \
         --include "*.parquet" \
-        ${1:+--delete}
+        $${1:+--delete}
 done
 
 echo "Sync complete at $(date -u)"

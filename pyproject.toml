@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "mda"
+version = "0.1.0"
+description = "Market Data Analytics — exchange throughput characterisation toolkit"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "numpy>=1.25",
+    "scipy>=1.11",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.3",
+    "plotly>=5.18",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "dask[dataframe]>=2024.1",
+    "boto3>=1.34",
+    "s3fs>=2024.1",
+    "fsspec>=2024.1",
+    "polars>=0.20",
+    "tqdm>=4.66",
+    "rich>=13",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mda*"]

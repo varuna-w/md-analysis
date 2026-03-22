@@ -20,17 +20,17 @@ def _resample_count_by_exchange(df: pd.DataFrame, freq: str) -> pd.DataFrame:
         df["receive_ts_dt"] = pd.to_datetime(
             df["received_at"], utc=True, format="mixed"
         )
-    result = (
-        df.groupby("exchange")
-        .apply(
-            lambda g: g.set_index("receive_ts_dt").resample(freq).size(),
-            include_groups=False,
-        )
-        .reset_index()
-        .rename(columns={0: "count"})
-    )
-    result.columns = ["exchange", "time_bin", "count"]
-    return result
+    parts = []
+    for exchange, grp in df.groupby("exchange"):
+        counts = grp.set_index("receive_ts_dt").resample(freq).size()
+        parts.append(pd.DataFrame({
+            "exchange": exchange,
+            "time_bin": counts.index,
+            "count": counts.values,
+        }))
+    if not parts:
+        return pd.DataFrame(columns=["exchange", "time_bin", "count"])
+    return pd.concat(parts, ignore_index=True)
 
 
 def compute_update_rate_by_depth(

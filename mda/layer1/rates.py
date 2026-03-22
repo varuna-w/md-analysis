@@ -41,17 +41,17 @@ def compute_rate_timeseries(
     DataFrame with columns: exchange, time_bin, msgs_per_sec.
     """
     fs = freq_to_seconds(freq)
-    result = (
-        df.groupby("exchange")
-        .apply(
-            lambda g: g.set_index("receive_ts_dt").resample(freq).size() / fs,
-            include_groups=False,
-        )
-        .rename("msgs_per_sec")
-        .reset_index()
-    )
-    result.columns = ["exchange", "time_bin", "msgs_per_sec"]
-    return result
+    parts = []
+    for exchange, grp in df.groupby("exchange"):
+        rate = grp.set_index("receive_ts_dt").resample(freq).size() / fs
+        parts.append(pd.DataFrame({
+            "exchange": exchange,
+            "time_bin": rate.index,
+            "msgs_per_sec": rate.values,
+        }))
+    if not parts:
+        return pd.DataFrame(columns=["exchange", "time_bin", "msgs_per_sec"])
+    return pd.concat(parts, ignore_index=True)
 
 
 def compute_rate_percentiles(rate_ts: pd.DataFrame) -> pd.DataFrame:

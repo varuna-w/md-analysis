@@ -71,13 +71,14 @@ def add_ts_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     if "timestamp" in df.columns:
         dt = pd.to_datetime(df["timestamp"], utc=True, format="mixed")
-        # .view("int64") gives nanoseconds since epoch; ÷1000 = microseconds.
-        # Cannot use .astype("datetime64[us]") on tz-aware arrays in pandas ≥3.0.
-        df["exchange_ts_us"] = dt.view("int64") // 1_000
+        # asi8 gives nanoseconds-since-epoch as int64 for tz-aware DatetimeIndex;
+        # ÷1000 → microseconds.  Series.view() and astype("datetime64[us]") both
+        # raise on tz-aware arrays in pandas ≥3.0.
+        df["exchange_ts_us"] = pd.DatetimeIndex(dt).asi8 // 1_000
         df["exchange_ts_dt"] = dt
     if "received_at" in df.columns:
         dt = pd.to_datetime(df["received_at"], utc=True, format="mixed")
-        df["receive_ts_us"] = dt.view("int64") // 1_000
+        df["receive_ts_us"] = pd.DatetimeIndex(dt).asi8 // 1_000
         df["receive_ts_dt"] = dt
     if "price" in df.columns and "price_scale" in df.columns:
         df["price_f"] = df["price"] / (10.0 ** df["price_scale"])

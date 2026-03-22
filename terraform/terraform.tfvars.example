@@ -1,0 +1,16 @@
+region              = "ca-central-1"
+az                  = "ca-central-1a"
+instance_type       = "r6i.2xlarge"             # 8 vCPU / 64 GiB — see variables.tf for other options
+ami_id              = "ami-XXXXXXXXXXXXXXXXX"   # Ubuntu 24.04, run describe-images to find latest
+
+data_volume_size_gb = 500
+log_retention_days  = 30
+
+key_pair_name       = "your-key-pair-name"
+admin_cidr          = "1.2.3.4/32"             # Restrict to your IP
+
+s3_data_bucket      = "mdl-parquet-data-<account-id>"
+collector_instance_id = "i-XXXXXXXXXXXXXXXXX"  # Optional: grants collector write access to S3
+
+expose_jupyter      = false
+jupyter_port        = 8888

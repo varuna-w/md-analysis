@@ -62,10 +62,27 @@ def _load_table(
     filt,
     columns: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Load a parquet dataset directory with optional filter and column selection."""
+    """Load a parquet dataset directory with optional filter and column selection.
+
+    Zero-byte files (open/partial writes by the collector) are silently skipped.
+    """
     if not os.path.isdir(path):
         raise FileNotFoundError(f"Parquet directory not found: {path}")
-    dataset = ds.dataset(path, format="parquet")
+
+    # Collect non-empty parquet files only — the collector may leave a zero-byte
+    # file open while writing the current 10-minute batch.
+    parquet_files = [
+        f for f in (
+            os.path.join(path, fn)
+            for fn in os.listdir(path)
+            if fn.endswith(".parquet")
+        )
+        if os.path.getsize(f) > 0
+    ]
+    if not parquet_files:
+        raise FileNotFoundError(f"No non-empty parquet files found in: {path}")
+
+    dataset = ds.dataset(sorted(parquet_files), format="parquet")
     kwargs: dict = {}
     if filt is not None:
         kwargs["filter"] = filt

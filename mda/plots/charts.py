@@ -34,6 +34,22 @@ def _exchange_color(exchange: str) -> str:
     return EXCHANGE_COLORS.get(exchange, "#888888")
 
 
+def _to_ms(dt) -> np.ndarray:
+    """Convert a tz-aware datetime Series / DatetimeIndex to int64 ms-since-epoch.
+
+    Plotly data-encodes integer x arrays exactly like numeric y arrays, then
+    renders them as a timeline when ``xaxis_type='date'`` is set.  Passing
+    tz-aware pandas datetime objects directly causes serialisation errors in
+    recent Plotly/orjson versions.
+    """
+    if isinstance(dt, pd.Series):
+        return pd.DatetimeIndex(dt).asi8 // 1_000_000
+    if isinstance(dt, pd.DatetimeIndex):
+        return dt.asi8 // 1_000_000
+    # scalar Timestamp
+    return int(pd.Timestamp(dt).value // 1_000_000)
+
+
 # ── Layer 1: Message Rates ──────────────────────────────────────────────────
 
 def plot_rate_timeseries(rate_ts: pd.DataFrame, rate_pcts: pd.DataFrame) -> go.Figure:
@@ -43,7 +59,7 @@ def plot_rate_timeseries(rate_ts: pd.DataFrame, rate_pcts: pd.DataFrame) -> go.F
         grp = rate_ts[rate_ts["exchange"] == exchange].sort_values("time_bin")
         color = _exchange_color(exchange)
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["msgs_per_sec"],
+            x=_to_ms(grp["time_bin"]), y=grp["msgs_per_sec"],
             mode="lines", name=exchange,
             line=dict(color=color, width=1.2),
             opacity=0.8,
@@ -59,7 +75,7 @@ def plot_rate_timeseries(rate_ts: pd.DataFrame, rate_pcts: pd.DataFrame) -> go.F
 
     fig.update_layout(
         title="R1: Message Arrival Rate (msgs/sec)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="msgs/sec",
         legend_title="Exchange",
         template="plotly_dark",
@@ -182,14 +198,14 @@ def plot_aggressor_imbalance(imbalance: pd.DataFrame) -> go.Figure:
     for exchange in imbalance["exchange"].unique():
         grp = imbalance[imbalance["exchange"] == exchange].sort_values("time_bin")
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["imbalance"],
+            x=_to_ms(grp["time_bin"]), y=grp["imbalance"],
             mode="lines", name=exchange,
             line=dict(color=_exchange_color(exchange), width=1.2),
         ))
     fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
     fig.update_layout(
         title="T2: Buy/Sell Aggressor Imbalance (rolling 1-min)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="Imbalance (buy_ratio − 0.5)",
         template="plotly_dark",
         height=450,
@@ -226,13 +242,13 @@ def plot_tick_frequency(tick_freq: pd.DataFrame) -> go.Figure:
     for exchange in tick_freq["exchange"].unique():
         grp = tick_freq[tick_freq["exchange"] == exchange].sort_values("time_bin")
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["unique_prices"],
+            x=_to_ms(grp["time_bin"]), y=grp["unique_prices"],
             mode="lines", name=exchange,
             line=dict(color=_exchange_color(exchange), width=1),
         ))
     fig.update_layout(
         title="T4: Unique Prices/sec (tick activity)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="Unique prices/sec",
         template="plotly_dark",
         height=450,
@@ -248,13 +264,13 @@ def plot_execution_rate_ts(exec_rate: pd.DataFrame) -> go.Figure:
     for exchange in exec_rate["exchange"].unique():
         grp = exec_rate[exec_rate["exchange"] == exchange].sort_values("time_bin")
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["exec_per_sec"],
+            x=_to_ms(grp["time_bin"]), y=grp["exec_per_sec"],
             mode="lines", name=exchange,
             line=dict(color=_exchange_color(exchange), width=1.2),
         ))
     fig.update_layout(
         title="E1: Execution Rate (exchange timestamp, exec/sec)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="exec/sec",
         template="plotly_dark",
         height=450,
@@ -364,13 +380,13 @@ def plot_latency_drift_ts(drift: pd.DataFrame) -> go.Figure:
     for exchange in drift["exchange"].unique():
         grp = drift[drift["exchange"] == exchange].sort_values("time_bin")
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["p50_latency_ms"],
+            x=_to_ms(grp["time_bin"]), y=grp["p50_latency_ms"],
             mode="lines", name=exchange,
             line=dict(color=_exchange_color(exchange)),
         ))
     fig.update_layout(
         title="E6: Feed Latency Drift (5-min rolling p50)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="Median latency (ms)",
         template="plotly_dark",
         height=450,
@@ -432,14 +448,15 @@ def plot_bbo_spread_depth(bbo: pd.DataFrame) -> go.Figure:
         color = _exchange_color(exchange)
         # Resample to 1-min median
         grp_r = grp.set_index("ts_dt").resample("1min").median(numeric_only=True).reset_index()
+        x_ms = _to_ms(grp_r["ts_dt"])
         fig.add_trace(
-            go.Scatter(x=grp_r["ts_dt"], y=grp_r["spread_bps"],
+            go.Scatter(x=x_ms, y=grp_r["spread_bps"],
                        name=f"{exchange} spread", line=dict(color=color)),
             secondary_y=False,
         )
         if "bid_qty" in grp_r.columns:
             fig.add_trace(
-                go.Scatter(x=grp_r["ts_dt"], y=grp_r["bid_qty"],
+                go.Scatter(x=x_ms, y=grp_r["bid_qty"],
                            name=f"{exchange} bid_qty", line=dict(color=color, dash="dot")),
                 secondary_y=True,
             )
@@ -447,6 +464,7 @@ def plot_bbo_spread_depth(bbo: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text="BBO qty", secondary_y=True)
     fig.update_layout(
         title="O2: BBO Spread (bps) and Quantity",
+        xaxis=dict(title="Time (UTC)", type="date"),
         template="plotly_dark",
         height=500,
     )
@@ -459,7 +477,7 @@ def plot_delta_compression_ts(delta_ratios: pd.DataFrame) -> go.Figure:
     for exchange in delta_ratios["exchange"].unique():
         grp = delta_ratios[delta_ratios["exchange"] == exchange].sort_values("time_bin")
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["delta_ratio"],
+            x=_to_ms(grp["time_bin"]), y=grp["delta_ratio"],
             mode="lines", name=exchange,
             line=dict(color=_exchange_color(exchange)),
         ))
@@ -467,7 +485,7 @@ def plot_delta_compression_ts(delta_ratios: pd.DataFrame) -> go.Figure:
                   annotation_text="ratio=1 (equal)")
     fig.update_layout(
         title="O3: Delta Compression Ratio (updates / snapshots)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="Delta ratio",
         template="plotly_dark",
         height=400,
@@ -580,15 +598,15 @@ def plot_cascade_throughput(
     for exchange in rate_ts["exchange"].unique():
         grp = rate_ts[rate_ts["exchange"] == exchange].sort_values("time_bin")
         fig.add_trace(go.Scatter(
-            x=grp["time_bin"], y=grp["msgs_per_sec"],
+            x=_to_ms(grp["time_bin"]), y=grp["msgs_per_sec"],
             mode="lines", name=exchange,
             line=dict(color=_exchange_color(exchange), width=1.2),
         ))
     for ts in cascade_windows[:20]:  # annotate up to 20 cascade events
-        fig.add_vline(x=ts, line_dash="dash", line_color="red", opacity=0.5)
+        fig.add_vline(x=_to_ms(ts), line_dash="dash", line_color="red", opacity=0.5)
     fig.update_layout(
         title="X3: Message Rate with Cascade Events (red=BTC >2% move)",
-        xaxis_title="Time (UTC)",
+        xaxis=dict(title="Time (UTC)", type="date"),
         yaxis_title="msgs/sec",
         template="plotly_dark",
         height=500,

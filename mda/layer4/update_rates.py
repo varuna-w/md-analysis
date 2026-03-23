@@ -66,6 +66,8 @@ def compute_update_rate_by_depth(
             "avg_updates_per_sec": float(rate.mean()),
             "p99_updates_per_sec": float(rate.quantile(0.99)),
         })
+    if not records:
+        return pd.DataFrame(columns=["exchange", "level", "avg_updates_per_sec", "p99_updates_per_sec"])
     return pd.DataFrame(records).sort_values(["exchange", "level"])
 
 

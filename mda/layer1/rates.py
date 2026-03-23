@@ -44,6 +44,13 @@ def compute_rate_timeseries(
     parts = []
     for exchange, grp in df.groupby("exchange"):
         rate = grp.set_index("receive_ts_dt").resample(freq).size() / fs
+        # Trim leading/trailing zero bins that fall outside the data range.
+        # resample() pads to full freq boundaries; we only want bins that
+        # overlap with actual data (i.e., drop outer empty bins).
+        first_msg = grp["receive_ts_dt"].min()
+        last_msg  = grp["receive_ts_dt"].max()
+        rate = rate[(rate.index >= first_msg.floor(freq)) &
+                    (rate.index <= last_msg.ceil(freq))]
         parts.append(pd.DataFrame({
             "exchange": exchange,
             "time_bin": rate.index,

@@ -50,6 +50,32 @@ def compute_gaps(df: pd.DataFrame, ts_col: str) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
+_MIN_VALID_NS: int = int(pd.Timestamp("2020-01-01", tz="UTC").value)  # epoch ns
+
+
+def drop_invalid_timestamps(df: pd.DataFrame, ts_col: str = "receive_ts_dt") -> pd.DataFrame:
+    """
+    Drop rows with null or pre-2020 timestamps from the given datetime column.
+
+    Called after ``add_ts_columns`` to remove corrupt or malformed records
+    before any analysis.  Also removes rows whose ``receive_ts_dt`` is NaT
+    (failed string parse) or suspiciously old (epoch / 1970-era values).
+    """
+    if ts_col not in df.columns:
+        return df
+    col = df[ts_col]
+    valid = col.notna() & (pd.DatetimeIndex(col).asi8 >= _MIN_VALID_NS)
+    dropped = (~valid).sum()
+    if dropped:
+        import warnings
+        warnings.warn(
+            f"drop_invalid_timestamps: dropping {dropped:,} rows with "
+            f"null or pre-2020 {ts_col!r}",
+            stacklevel=2,
+        )
+    return df[valid].reset_index(drop=True)
+
+
 def add_ts_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add derived timestamp columns to a trades or orderbook DataFrame.

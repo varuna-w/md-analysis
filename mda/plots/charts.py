@@ -34,20 +34,25 @@ def _exchange_color(exchange: str) -> str:
     return EXCHANGE_COLORS.get(exchange, "#888888")
 
 
-def _to_ms(dt) -> np.ndarray:
-    """Convert a tz-aware datetime Series / DatetimeIndex to int64 ms-since-epoch.
+def _to_ms(dt):
+    """Convert tz-aware datetime Series / DatetimeIndex / Timestamp to tz-naive UTC.
 
-    Plotly data-encodes integer x arrays exactly like numeric y arrays, then
-    renders them as a timeline when ``xaxis_type='date'`` is set.  Passing
-    tz-aware pandas datetime objects directly causes serialisation errors in
-    recent Plotly/orjson versions.
+    Plotly 6.x no longer interprets int64 milliseconds on date axes — they
+    appear as 1970.  Passing tz-naive numpy datetime64[ns] arrays is the
+    correct approach: plotly auto-detects the type and renders the axis
+    correctly without requiring ``xaxis_type='date'``.
     """
     if isinstance(dt, pd.Series):
-        return pd.DatetimeIndex(dt).asi8 // 1_000_000
-    if isinstance(dt, pd.DatetimeIndex):
-        return dt.asi8 // 1_000_000
-    # scalar Timestamp
-    return int(pd.Timestamp(dt).value // 1_000_000)
+        dti = pd.DatetimeIndex(dt)
+    elif isinstance(dt, pd.DatetimeIndex):
+        dti = dt
+    else:
+        # scalar Timestamp
+        ts = pd.Timestamp(dt)
+        return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo else ts
+    if dti.tz is not None:
+        dti = dti.tz_convert("UTC").tz_localize(None)
+    return dti.to_numpy()
 
 
 # ── Layer 1: Message Rates ──────────────────────────────────────────────────
@@ -75,7 +80,7 @@ def plot_rate_timeseries(rate_ts: pd.DataFrame, rate_pcts: pd.DataFrame) -> go.F
 
     fig.update_layout(
         title="R1: Message Arrival Rate (msgs/sec)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="msgs/sec",
         legend_title="Exchange",
         template="plotly_dark",
@@ -205,7 +210,7 @@ def plot_aggressor_imbalance(imbalance: pd.DataFrame) -> go.Figure:
     fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
     fig.update_layout(
         title="T2: Buy/Sell Aggressor Imbalance (rolling 1-min)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="Imbalance (buy_ratio − 0.5)",
         template="plotly_dark",
         height=450,
@@ -248,7 +253,7 @@ def plot_tick_frequency(tick_freq: pd.DataFrame) -> go.Figure:
         ))
     fig.update_layout(
         title="T4: Unique Prices/sec (tick activity)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="Unique prices/sec",
         template="plotly_dark",
         height=450,
@@ -270,7 +275,7 @@ def plot_execution_rate_ts(exec_rate: pd.DataFrame) -> go.Figure:
         ))
     fig.update_layout(
         title="E1: Execution Rate (exchange timestamp, exec/sec)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="exec/sec",
         template="plotly_dark",
         height=450,
@@ -386,7 +391,7 @@ def plot_latency_drift_ts(drift: pd.DataFrame) -> go.Figure:
         ))
     fig.update_layout(
         title="E6: Feed Latency Drift (5-min rolling p50)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="Median latency (ms)",
         template="plotly_dark",
         height=450,
@@ -464,7 +469,7 @@ def plot_bbo_spread_depth(bbo: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text="BBO qty", secondary_y=True)
     fig.update_layout(
         title="O2: BBO Spread (bps) and Quantity",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         template="plotly_dark",
         height=500,
     )
@@ -485,7 +490,7 @@ def plot_delta_compression_ts(delta_ratios: pd.DataFrame) -> go.Figure:
                   annotation_text="ratio=1 (equal)")
     fig.update_layout(
         title="O3: Delta Compression Ratio (updates / snapshots)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="Delta ratio",
         template="plotly_dark",
         height=400,
@@ -606,7 +611,7 @@ def plot_cascade_throughput(
         fig.add_vline(x=_to_ms(ts), line_dash="dash", line_color="red", opacity=0.5)
     fig.update_layout(
         title="X3: Message Rate with Cascade Events (red=BTC >2% move)",
-        xaxis=dict(title="Time (UTC)", type="date"),
+        xaxis=dict(title="Time (UTC)"),
         yaxis_title="msgs/sec",
         template="plotly_dark",
         height=500,

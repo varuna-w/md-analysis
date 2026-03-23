@@ -23,7 +23,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
 
-from .timestamps import add_ts_columns
+from .timestamps import add_ts_columns, drop_invalid_timestamps
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -124,6 +124,7 @@ def load_trades(
     df = _load_table(path, filt, columns)
     if add_ts_cols:
         df = add_ts_columns(df)
+        df = drop_invalid_timestamps(df, "receive_ts_dt")
         df = df.sort_values("receive_ts_us").reset_index(drop=True)
     return df
 

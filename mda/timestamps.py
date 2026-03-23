@@ -50,7 +50,7 @@ def compute_gaps(df: pd.DataFrame, ts_col: str) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
-_MIN_VALID_NS: int = int(pd.Timestamp("2020-01-01", tz="UTC").value)  # epoch ns
+_MIN_VALID_TS = pd.Timestamp("2020-01-01", tz="UTC")
 
 
 def drop_invalid_timestamps(df: pd.DataFrame, ts_col: str = "receive_ts_dt") -> pd.DataFrame:
@@ -58,14 +58,19 @@ def drop_invalid_timestamps(df: pd.DataFrame, ts_col: str = "receive_ts_dt") -> 
     Drop rows with null or pre-2020 timestamps from the given datetime column.
 
     Called after ``add_ts_columns`` to remove corrupt or malformed records
-    before any analysis.  Also removes rows whose ``receive_ts_dt`` is NaT
-    (failed string parse) or suspiciously old (epoch / 1970-era values).
+    before any analysis.  Rows whose ``receive_ts_dt`` is NaT (failed string
+    parse) or before 2020-01-01 UTC (epoch / 1970-era values) are removed.
+
+    Uses direct Series comparison rather than ``asi8`` to avoid pandas 3.0
+    issues with tz-aware ``DatetimeTZDtype`` arrays.
     """
     if ts_col not in df.columns:
         return df
     col = df[ts_col]
-    valid = col.notna() & (pd.DatetimeIndex(col).asi8 >= _MIN_VALID_NS)
-    dropped = (~valid).sum()
+    # Ensure comparison is tz-consistent: if col is tz-naive treat as UTC.
+    min_ts = _MIN_VALID_TS if col.dt.tz is not None else _MIN_VALID_TS.tz_localize(None)
+    valid = col.notna() & (col >= min_ts)
+    dropped = int((~valid).sum())
     if dropped:
         import warnings
         warnings.warn(

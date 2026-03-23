@@ -167,18 +167,29 @@ def load_orderbook_updates(
     add_ts_cols: bool = True,
     columns: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Load the orderbook_updates parquet table (incremental delta updates)."""
+    """Load the orderbook_updates parquet table (incremental delta updates).
+
+    Time filtering uses pyarrow string comparison on ``received_at`` (ISO 8601),
+    which avoids loading the full table into memory before trimming to a window.
+    Lexicographic ISO-string comparison is safe for UTC timestamps.
+    """
     path = os.path.join(data_dir, "orderbook_updates")
-    # orderbook_updates has no event_time_ms — filter by received_at string comparison
-    filt = _ds_filter(exchanges, symbols, None, None)  # exchange/symbol only
+    filters: list[pa.compute.Expression] = []
+    if exchanges:
+        filters.append(pc.field("exchange").isin(exchanges))
+    if symbols:
+        filters.append(pc.field("symbol").isin(symbols))
+    if start_dt:
+        # ISO string comparison is lexicographically valid for UTC timestamps
+        filters.append(pc.field("received_at") >= start_dt)
+    if end_dt:
+        filters.append(pc.field("received_at") <= end_dt)
+    filt = None
+    if filters:
+        filt = filters[0]
+        for f in filters[1:]:
+            filt = filt & f
     df = _load_table(path, filt, columns)
-    if start_dt or end_dt:
-        if "received_at" in df.columns:
-            dt_col = pd.to_datetime(df["received_at"], utc=True, format="mixed")
-            if start_dt:
-                df = df[dt_col >= pd.Timestamp(start_dt, tz="UTC")]
-            if end_dt:
-                df = df[dt_col <= pd.Timestamp(end_dt, tz="UTC")]
     if add_ts_cols:
         df = add_ts_columns(df)
     return df
